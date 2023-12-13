@@ -1,0 +1,136 @@
+#!/usr/bin/env python
+
+import sys
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+
+
+from livecoding import load_bedgraph
+from livecoding import bin_array
+from livecoding import find_peaks
+from livecoding import find_profile
+from livecoding import find_correlations
+
+def main():
+    # Load file names and fragment width
+    sample_forward_fname, sample_reverse_fname, control_forward_fname, control_reverse_fname, out_fname = sys.argv[1:6]
+    frag_width = 198
+    print('0')
+    # Define what genomic region we want to analyze
+    chrom = "chr2R"
+    chromstart = 10000000
+    chromend =  12000000
+    chromlen = chromend - chromstart
+
+    # Load the sample bedgraph data, reusing the function we already wrote
+    sample_forward = load_bedgraph(sample_forward_fname, chrom, 0, chromlen)
+    sample_reverse = load_bedgraph(sample_reverse_fname, chrom, 0, chromlen)
+
+    # Combine tag densities, shifting by our previously found fragment width
+    sample_combined = np.zeros_like(sample_forward)
+    sample_combined[(frag_width//2):] += sample_forward[:-(frag_width//2)]
+    sample_combined[:-(frag_width//2)] += sample_reverse[(frag_width//2):]
+
+    # Load the control bedgraph data, reusing the function we already wrote
+    control_forward = load_bedgraph(control_forward_fname, chrom, 0, chromlen)
+    control_reverse = load_bedgraph(control_reverse_fname, chrom, 0, chromlen)
+
+    # Combine tag densities
+    control_combined = np.zeros_like(control_forward)
+    control_combined[(frag_width//2):] += control_forward[:-(frag_width//2)]
+    control_combined[:-(frag_width//2)] += control_reverse[(frag_width//2):]
+
+    # Adjust the control to have the same coverage as our sample
+    sample_combined = sample_combined * (np.sum(control_combined)/np.sum(sample_combined))
+    print('2')
+
+    # Create a background mean using our previous binning function and a 1K window
+    # Make sure to adjust to be the mean expected per base
+
+    control_scores = bin_array(control_combined, 1000)/1000
+    print('3')
+    # Find the mean tags/bp and make each background position the higher of the
+    # the binned score and global background score
+    print('4')
+    # for i in range(len(control_scores)):
+    # 	control_scores[i] = np.maximum(control_scores[i], np.mean(control_scores))
+
+    control_scores = np.maximum(control_scores, np.mean(control_scores))
+
+    print(control_scores)
+    # Score the sample using a binsize that is twice our fragment size
+    # We can reuse the binning function we already wrote
+    print('5')
+    scores = bin_array(sample_combined, (2*frag_width))
+
+    # Find the p-value for each position (you can pass a whole array of values
+    # and and array of means). Use scipy.stats.poisson for the distribution.
+    # Remeber that we're looking for the probability of seeing a value this large
+    # or larger
+    # Also, don't forget that your background is per base, while your sample is
+    # per 2 * width bases. You'll need to adjust your background
+    print('6')
+    poisson = stats.poisson.pmf(scores, mu=1e-10)
+
+    print(poisson)
+
+    # Transform the p-values into -log10
+    # You will also need to set a minimum pvalue so you doen't get a divide by
+    # zero error. I suggest using 1e-250
+
+    pvalues = -np.log10(poisson + 1e-250)
+    print('7')
+    # Write p-values to a wiggle file
+    # The file should start with the line
+    # "fixedStep chrom=CHROM start=CHROMSTART step=1 span=1" where CHROM and
+    # CHROMSTART are filled in from your target genomic region. Then you have
+    # one value per line (in this case, representing a value for each basepair).
+    # Note that wiggle files start coordinates at 1, not zero, so add 1 to your
+    # chromstart. Also, the file should end in the suffix ".wig"
+
+    print('5')
+    write_wiggle(pvalues, chrom, chromstart, out_fname + ".wig")
+
+    # Write bed file with non-overlapping peaks defined by high-scoring regions 
+    print('6')
+    write_bed(scores, chrom, chromstart, chromend, frag_width, out_fname + ".bed")
+
+
+
+def write_wiggle(pvalues, chrom, chromstart, fname):
+    output = open(fname, 'w')
+    print(f"fixedStep chrom={chrom} start={chromstart + 1} step=1 span=1",
+          file=output)
+    for i in pvalues:
+        print(i, file=output)
+    output.close()
+
+
+def write_bed(scores, chrom, chromstart, chromend, frag_width, fname):
+    chromlen = chromend - chromstart
+    output = open(fname, 'w')
+    while np.amax(scores) >= 10:
+        pos = np.argmax(scores)
+        start = pos
+        while start > 0 and scores[start - 1] >= 10:
+            start -= 1
+        end = pos
+        while end < chromlen - 1 and scores[end + 1] >= 10:
+            end += 1
+        end = min(chromlen, end + frag_width - 1)
+        print(f"{chrom}\t{start + chromstart}\t{end + chromstart}", file=output)
+        scores[start:end] = 0
+    output.close()
+
+
+
+
+
+
+
+if __name__ == "__main__":
+    main()
+
+
